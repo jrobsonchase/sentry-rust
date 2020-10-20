@@ -60,7 +60,7 @@ impl fmt::Debug for Client {
 impl Clone for Client {
     fn clone(&self) -> Client {
         let transport = Arc::new(RwLock::new(self.transport.read().unwrap().clone()));
-        let session_flusher = SessionFlusher::new(transport.clone());
+        let session_flusher = SessionFlusher::new(transport.clone(), self.options.session_mode);
         Client {
             options: self.options.clone(),
             transport,
@@ -128,7 +128,7 @@ impl Client {
             sdk_info.integrations.push(integration.name().to_string());
         }
 
-        let session_flusher = SessionFlusher::new(transport.clone());
+        let session_flusher = SessionFlusher::new(transport.clone(), options.session_mode);
         Client {
             options,
             transport,
