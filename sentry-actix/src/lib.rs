@@ -38,6 +38,21 @@
 //! }
 //! ```
 //!
+//! # Using Release Health
+//!
+//! It is possible to configure the actix middleware to capture a release health
+//! session for each request. Doing so will require to configure the sentry
+//! client to use request-mode sessions as well.
+//!
+//! ```
+//! let _sentry = sentry::init(sentry::ClientOptions {
+//!     session_mode: sentry::SessionMode::Request,
+//!     ..Default::default()
+//! });
+//!
+//! let middleware = sentry_actix::Sentry::builder().track_session(true).finish();
+//! ```
+//!
 //! # Reusing the Hub
 //!
 //! This integration will automatically update the current Hub instance. For example,
@@ -105,6 +120,15 @@ impl SentryBuilder {
         self.middleware.capture_server_errors = val;
         self
     }
+
+    /// If enabled, start a new release-health session for each request.
+    ///
+    /// When enabling this, it is highly recommended to also configure the
+    /// sentry client to use [`SessionMode::Request`](sentry::SessionMode::Request).
+    pub fn track_session(mut self, val: bool) -> Self {
+        self.middleware.track_session = val;
+        self
+    }
 }
 
 /// Reports certain failures to Sentry.
@@ -113,6 +137,7 @@ pub struct Sentry {
     hub: Option<Arc<Hub>>,
     emit_header: bool,
     capture_server_errors: bool,
+    track_session: bool,
 }
 
 impl Sentry {
@@ -122,6 +147,7 @@ impl Sentry {
             hub: None,
             emit_header: false,
             capture_server_errors: true,
+            track_session: false,
         }
     }
 
@@ -190,6 +216,9 @@ where
         let hub = Arc::new(Hub::new_from_top(
             inner.hub.clone().unwrap_or_else(Hub::main),
         ));
+        if inner.track_session {
+            hub.start_session();
+        }
         let client = hub.client();
         let with_pii = client
             .as_ref()
@@ -457,5 +486,48 @@ mod tests {
         assert_eq!(event.exception.values[0].value, Some("Test Error".into()));
         assert_eq!(event.level, Level::Error);
         assert_eq!(request.method, Some("GET".into()));
+    }
+
+    #[actix_rt::test]
+    async fn test_track_session() {
+        let envelopes = sentry::test::with_captured_envelopes_options(
+            || {
+                block_on(async {
+                    #[get("/")]
+                    async fn hello() -> impl actix_web::Responder {
+                        String::from("Hello there!")
+                    }
+
+                    let middleware = Sentry::builder()
+                        .with_hub(Hub::current())
+                        .track_session(true)
+                        .finish();
+
+                    let mut app = init_service(App::new().wrap(middleware).service(hello)).await;
+
+                    for _ in 0..5 {
+                        let req = TestRequest::get().uri("/").to_request();
+                        call_service(&mut app, req).await;
+                    }
+                })
+            },
+            sentry::ClientOptions {
+                release: Some("some-release".into()),
+                session_mode: sentry::SessionMode::Request,
+                ..Default::default()
+            },
+        );
+        assert_eq!(envelopes.len(), 1);
+
+        let mut items = envelopes[0].items();
+        if let Some(sentry::protocol::EnvelopeItem::SessionAggregates(aggregate)) = items.next() {
+            let aggregates = &aggregate.aggregates;
+
+            assert_eq!(aggregates[0].distinct_id, None);
+            assert_eq!(aggregates[0].exited, 5);
+        } else {
+            panic!("expected session");
+        }
+        assert_eq!(items.next(), None);
     }
 }
