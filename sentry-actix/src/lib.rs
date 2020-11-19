@@ -40,17 +40,16 @@
 //!
 //! # Using Release Health
 //!
-//! It is possible to configure the actix middleware to capture a release health
-//! session for each request. Doing so will require to configure the sentry
-//! client to use request-mode sessions as well.
+//! The actix middleware will automatically start a new session for each request
+//! when `auto_session_tracking` is enabled and the client is configured to
+//! use `SessionMode::Request`.
 //!
 //! ```
 //! let _sentry = sentry::init(sentry::ClientOptions {
 //!     session_mode: sentry::SessionMode::Request,
+//!     auto_session_tracking: true,
 //!     ..Default::default()
 //! });
-//!
-//! let middleware = sentry_actix::Sentry::builder().track_session(true).finish();
 //! ```
 //!
 //! # Reusing the Hub
@@ -120,15 +119,6 @@ impl SentryBuilder {
         self.middleware.capture_server_errors = val;
         self
     }
-
-    /// If enabled, start a new release-health session for each request.
-    ///
-    /// When enabling this, it is highly recommended to also configure the
-    /// sentry client to use [`SessionMode::Request`](sentry::SessionMode::Request).
-    pub fn track_session(mut self, val: bool) -> Self {
-        self.middleware.track_session = val;
-        self
-    }
 }
 
 /// Reports certain failures to Sentry.
@@ -137,7 +127,6 @@ pub struct Sentry {
     hub: Option<Arc<Hub>>,
     emit_header: bool,
     capture_server_errors: bool,
-    track_session: bool,
 }
 
 impl Sentry {
@@ -147,7 +136,6 @@ impl Sentry {
             hub: None,
             emit_header: false,
             capture_server_errors: true,
-            track_session: false,
         }
     }
 
@@ -216,13 +204,18 @@ where
         let hub = Arc::new(Hub::new_from_top(
             inner.hub.clone().unwrap_or_else(Hub::main),
         ));
-        if inner.track_session {
+        let client = hub.client();
+        let track_sessions = client.as_ref().map_or(false, |client| {
+            let options = client.options();
+            options.auto_session_tracking
+                && options.session_mode == sentry_core::SessionMode::Request
+        });
+        if track_sessions {
             hub.start_session();
         }
-        let client = hub.client();
         let with_pii = client
             .as_ref()
-            .map_or(false, |x| x.options().send_default_pii);
+            .map_or(false, |client| client.options().send_default_pii);
 
         let (tx, sentry_req) = sentry_request_from_http(&req, with_pii);
         hub.configure_scope(|scope| {
@@ -498,10 +491,7 @@ mod tests {
                         String::from("Hello there!")
                     }
 
-                    let middleware = Sentry::builder()
-                        .with_hub(Hub::current())
-                        .track_session(true)
-                        .finish();
+                    let middleware = Sentry::builder().with_hub(Hub::current()).finish();
 
                     let mut app = init_service(App::new().wrap(middleware).service(hello)).await;
 
@@ -514,6 +504,7 @@ mod tests {
             sentry::ClientOptions {
                 release: Some("some-release".into()),
                 session_mode: sentry::SessionMode::Request,
+                auto_session_tracking: true,
                 ..Default::default()
             },
         );

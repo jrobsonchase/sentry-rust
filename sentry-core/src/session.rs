@@ -406,7 +406,6 @@ mod tests {
         let envelopes = crate::test::with_captured_envelopes_options(
             || {
                 sentry::start_session();
-                // this error will be captured along with an individual update.
                 let err = "NaN".parse::<usize>().unwrap_err();
                 sentry::capture_error(&err);
 
@@ -438,25 +437,16 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(envelopes.len(), 3);
-
-        let session_id;
+        assert_eq!(envelopes.len(), 2);
 
         let mut items = envelopes[0].items();
         assert!(matches!(items.next(), Some(EnvelopeItem::Event(_))));
-        if let Some(EnvelopeItem::SessionUpdate(session)) = items.next() {
-            session_id = session.session_id;
-            assert_eq!(session.status, SessionStatus::Ok);
-            assert_eq!(session.errors, 1);
-            assert_eq!(session.init, true);
-        } else {
-            panic!("expected session");
-        }
         assert_eq!(items.next(), None);
 
         let mut items = envelopes[1].items();
         if let Some(EnvelopeItem::SessionAggregates(aggregate)) = items.next() {
             let mut aggregates = aggregate.aggregates.clone();
+            assert_eq!(aggregates.len(), 2);
             // the order depends on a hashmap and is not stable otherwise
             aggregates.sort_by(|a, b| {
                 a.distinct_id
@@ -466,21 +456,11 @@ mod tests {
 
             assert_eq!(aggregates[0].distinct_id, None);
             assert_eq!(aggregates[0].exited, 50);
+            assert_eq!(aggregates[1].errored, 1);
 
             assert_eq!(aggregates[1].distinct_id, Some("foo-bar".into()));
             assert_eq!(aggregates[1].exited, 49);
             assert_eq!(aggregates[1].errored, 1);
-        } else {
-            panic!("expected session");
-        }
-        assert_eq!(items.next(), None);
-
-        let mut items = envelopes[2].items();
-        if let Some(EnvelopeItem::SessionUpdate(session)) = items.next() {
-            assert_eq!(session.session_id, session_id);
-            assert_eq!(session.status, SessionStatus::Exited);
-            assert_eq!(session.errors, 1);
-            assert_eq!(session.init, false);
         } else {
             panic!("expected session");
         }
@@ -537,6 +517,7 @@ mod tests {
         }
         assert_eq!(items.next(), None);
     }
+
     #[test]
     fn test_session_sampled_errors() {
         let mut envelopes = crate::test::with_captured_envelopes_options(

@@ -13,7 +13,7 @@ use crate::constants::SDK_INFO;
 use crate::protocol::{ClientSdkInfo, Event};
 use crate::session::SessionFlusher;
 use crate::types::{Dsn, Uuid};
-use crate::{ClientOptions, Envelope, Hub, Integration, Scope, Transport};
+use crate::{ClientOptions, Envelope, Hub, Integration, Scope, SessionMode, Transport};
 
 impl<T: Into<ClientOptions>> From<T> for Client {
     fn from(o: T) -> Client {
@@ -257,16 +257,20 @@ impl Client {
             if let Some(event) = self.prepare_event(event, scope) {
                 let event_id = event.event_id;
                 let mut envelope: Envelope = event.into();
-                let session_item = scope.and_then(|scope| {
-                    scope
-                        .session
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .and_then(|session| session.create_envelope_item())
-                });
-                if let Some(session_item) = session_item {
-                    envelope.add_item(session_item);
+                // For request-mode sessions, we aggregate them all instead of
+                // flushing them out early.
+                if self.options.session_mode == SessionMode::Application {
+                    let session_item = scope.and_then(|scope| {
+                        scope
+                            .session
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .and_then(|session| session.create_envelope_item())
+                    });
+                    if let Some(session_item) = session_item {
+                        envelope.add_item(session_item);
+                    }
                 }
                 transport.send_envelope(envelope);
                 return event_id;
