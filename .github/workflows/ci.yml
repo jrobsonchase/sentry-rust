@@ -140,6 +140,7 @@ jobs:
           profile: minimal
           toolchain: nightly
           components: llvm-tools-preview
+          override: true
 
       - uses: Swatinem/rust-cache@v1
 
